@@ -14,10 +14,10 @@ func Test1(t *testing.T) {
 
 	parser, err := NewParser(
 		&Options{
-			MatcherStartFunc: func(b byte) bool {
-				return b == 'Z'
+			MatcherStartFunc: func(probe *MatcherStartProbe) bool {
+				return probe.CurrByte == 'Z'
 			},
-			MatcherSteerFunc: func(_ []byte) MatcherSteerFlow {
+			MatcherSteerFunc: func(_ *MatcherSteerProbe) MatcherSteerFlow {
 				return MatcherSteerComplete
 			},
 			LogPrefix: logPrefix,
@@ -29,39 +29,45 @@ func Test1(t *testing.T) {
 	}
 
 	func() {
-		resultTree, err := parser.Parse(
+		matchCtxTree, err := parser.Parse(
 			[]byte("Z"),
 		)
 		if err != nil {
 			panic(err)
 		}
 
-		it := resultTree.Iterator()
+		it := matchCtxTree.Iterator()
 		for it.Next() {
+			ctx := it.Value()
 			log.Printf(
-				"%s-1: <%d>%s",
+				"%s-1: <%d>[%d-%d]%s",
 				logPrefix,
 				it.Key(),
-				it.Value(),
+				ctx.StartIdx,
+				ctx.EndIdx,
+				ctx.Data,
 			)
 		}
 	}()
 
 	func() {
-		resultTree, err := parser.Parse(
+		matchCtxTree, err := parser.Parse(
 			[]byte("ZZZ"),
 		)
 		if err != nil {
 			panic(err)
 		}
 
-		it := resultTree.Iterator()
+		it := matchCtxTree.Iterator()
 		for it.Next() {
+			ctx := it.Value()
 			log.Printf(
-				"%s-2: <%d>%s",
+				"%s-2: <%d>[%d-%d]%s",
 				logPrefix,
 				it.Key(),
-				it.Value(),
+				ctx.StartIdx,
+				ctx.EndIdx,
+				ctx.Data,
 			)
 		}
 	}()
@@ -74,11 +80,27 @@ func Test2(t *testing.T) {
 
 	parser, err := NewParser(
 		&Options{
-			MatcherStartFunc: func(b byte) bool {
-				return b == 'Z'
+			MatcherStartFunc: func(probe *MatcherStartProbe) bool {
+				log.Printf(
+					"%s-Start: CurrIdx=%d, CurrByte=%c",
+					logPrefix,
+					probe.CurrIdx,
+					probe.CurrByte,
+				)
+
+				return probe.CurrByte == 'Z'
 			},
-			MatcherSteerFunc: func(buf []byte) MatcherSteerFlow {
-				switch zerocopy.ByteSliceToString(buf) {
+			MatcherSteerFunc: func(probe *MatcherSteerProbe) MatcherSteerFlow {
+				log.Printf(
+					"%s-Steer: CurrIdx=%d, CurrByte=%c, StartIdx=%d, Data=%s",
+					logPrefix,
+					probe.CurrIdx,
+					probe.CurrByte,
+					probe.StartIdx,
+					probe.Data,
+				)
+
+				switch zerocopy.ByteSliceToString(probe.Data) {
 				case "Z":
 					fallthrough
 				case "ZZ":
@@ -98,20 +120,23 @@ func Test2(t *testing.T) {
 	}
 
 	func() {
-		resultTree, err := parser.Parse(
-			[]byte("ZabZZcdZZZZZefZZZghZZ"),
+		matchCtxTree, err := parser.Parse(
+			[]byte("ZabZZcdZZZZZefZZZghZZi"),
 		)
 		if err != nil {
 			panic(err)
 		}
 
-		it := resultTree.Iterator()
+		it := matchCtxTree.Iterator()
 		for it.Next() {
+			ctx := it.Value()
 			log.Printf(
-				"%s-1: <%d>%s",
+				"%s-1: <%d>[%d-%d]%s",
 				logPrefix,
 				it.Key(),
-				it.Value(),
+				ctx.StartIdx,
+				ctx.EndIdx,
+				ctx.Data,
 			)
 		}
 	}()

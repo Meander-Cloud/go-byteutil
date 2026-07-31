@@ -16,13 +16,37 @@ const (
 	MatcherSteerComplete MatcherSteerFlow = 3
 )
 
+type ParseContext struct {
+	Source   *[]byte
+	CurrIdx  int
+	CurrByte byte
+}
+
+type MatcherStartProbe struct {
+	*ParseContext
+}
+
+type MatcherSteerProbe struct {
+	*ParseContext
+	StartIdx int
+	Data     []byte
+}
+
+type MatchContext struct {
+	Source   *[]byte
+	StartIdx int
+	EndIdx   int
+	Data     []byte
+}
+
 type Matcher struct {
-	startIdx int
+	StartIdx int
 }
 
 type Options struct {
-	MatcherStartFunc func(byte) bool
-	MatcherSteerFunc func([]byte) MatcherSteerFlow
+	// functor logic must run synchronously, and must not alter any argument data
+	MatcherStartFunc func(*MatcherStartProbe) bool
+	MatcherSteerFunc func(*MatcherSteerProbe) MatcherSteerFlow
 
 	LogPrefix string
 	LogDebug  bool
@@ -71,8 +95,8 @@ func NewParser(options *Options) (*Parser, error) {
 	}, nil
 }
 
-func (p *Parser) Parse(source []byte) (*rbt.Tree[uint32, []byte], error) {
-	resultTree := rbt.New[uint32, []byte]()
+func (p *Parser) Parse(source []byte) (*rbt.Tree[uint32, *MatchContext], error) {
+	matchCtxTree := rbt.New[uint32, *MatchContext]()
 
 	sourceLen := len(source)
 	if sourceLen == 0 {
@@ -82,15 +106,31 @@ func (p *Parser) Parse(source []byte) (*rbt.Tree[uint32, []byte], error) {
 				p.options.LogPrefix,
 			)
 		}
-		return resultTree, nil
+		return matchCtxTree, nil
 	}
 
 	var matcherGen uint32 = 1
 	matcherTree := rbt.New[uint32, *Matcher]()
 
-	for i, b := range source {
+	parseCtx := &ParseContext{
+		Source:   &source,
+		CurrIdx:  -1,
+		CurrByte: 0x00,
+	}
+
+	startProbe := &MatcherStartProbe{
+		ParseContext: parseCtx,
+	}
+
+	steerProbe := &MatcherSteerProbe{
+		ParseContext: parseCtx,
+		StartIdx:     -1,
+		Data:         nil,
+	}
+
+	for parseCtx.CurrIdx, parseCtx.CurrByte = range source {
 		// new potential matchers
-		if p.options.MatcherStartFunc(b) {
+		if p.options.MatcherStartFunc(startProbe) {
 			k := matcherGen
 			matcherGen++ // advance
 
@@ -99,15 +139,15 @@ func (p *Parser) Parse(source []byte) (*rbt.Tree[uint32, []byte], error) {
 					"%s: add <%d>[%d-]%x",
 					p.options.LogPrefix,
 					k,
-					i,
-					b,
+					parseCtx.CurrIdx,
+					parseCtx.CurrByte,
 				)
 			}
 
 			matcherTree.Put(
 				k,
 				&Matcher{
-					startIdx: i,
+					StartIdx: parseCtx.CurrIdx,
 				},
 			)
 		}
@@ -119,8 +159,10 @@ func (p *Parser) Parse(source []byte) (*rbt.Tree[uint32, []byte], error) {
 			k := mit.Key()
 			m := mit.Value()
 
-			buf := source[m.startIdx : i+1]
-			steerFlow := p.options.MatcherSteerFunc(buf)
+			steerProbe.StartIdx = m.StartIdx
+			steerProbe.Data = source[m.StartIdx : parseCtx.CurrIdx+1]
+
+			steerFlow := p.options.MatcherSteerFunc(steerProbe)
 
 			switch steerFlow {
 			case MatcherSteerRemove:
@@ -129,9 +171,9 @@ func (p *Parser) Parse(source []byte) (*rbt.Tree[uint32, []byte], error) {
 						"%s: remove <%d>[%d-%d]%x",
 						p.options.LogPrefix,
 						k,
-						m.startIdx,
-						i,
-						buf,
+						m.StartIdx,
+						parseCtx.CurrIdx,
+						steerProbe.Data,
 					)
 				}
 				rmTree.Put(k, struct{}{})
@@ -143,14 +185,19 @@ func (p *Parser) Parse(source []byte) (*rbt.Tree[uint32, []byte], error) {
 						"%s: parsed <%d>[%d-%d]%x",
 						p.options.LogPrefix,
 						k,
-						m.startIdx,
-						i,
-						buf,
+						m.StartIdx,
+						parseCtx.CurrIdx,
+						steerProbe.Data,
 					)
 				}
-				resultTree.Put(
+				matchCtxTree.Put(
 					k,
-					buf,
+					&MatchContext{
+						Source:   &source,
+						StartIdx: m.StartIdx,
+						EndIdx:   parseCtx.CurrIdx,
+						Data:     steerProbe.Data,
+					},
 				)
 				rmTree.Put(k, struct{}{})
 			default:
@@ -160,9 +207,9 @@ func (p *Parser) Parse(source []byte) (*rbt.Tree[uint32, []byte], error) {
 						p.options.LogPrefix,
 						steerFlow,
 						k,
-						m.startIdx,
-						i,
-						buf,
+						m.StartIdx,
+						parseCtx.CurrIdx,
+						steerProbe.Data,
 					)
 				}
 				rmTree.Put(k, struct{}{})
@@ -185,12 +232,12 @@ func (p *Parser) Parse(source []byte) (*rbt.Tree[uint32, []byte], error) {
 				"%s: incomplete <%d>[%d-%d]%x",
 				p.options.LogPrefix,
 				k,
-				m.startIdx,
+				m.StartIdx,
 				sourceLen-1,
-				source[m.startIdx:],
+				source[m.StartIdx:],
 			)
 		}
 	}
 
-	return resultTree, nil
+	return matchCtxTree, nil
 }
